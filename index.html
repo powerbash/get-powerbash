@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# powerbash setup
+#
+
+REMOTE=${REMOTE:-https://github.com/napalm255/powerbash.git}
+TMPDIR=${TMPDIR:-/tmp}
+GITDIR=${GITDIR:-${TMPDIR}/powerbash-master}
+
+## test if command exists
+ftest () {
+  echo "  info: Checking for ${1}."
+  if ! type -f "${1}" > /dev/null 2>&1; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+## feature tests
+features () {
+  for f in "${@}"; do
+    ftest "${f}" || {
+      echo >&2 "  error: Missing \`${f}'! Make sure it exists and try again."
+      return 1
+    }
+  done
+  return 0
+}
+
+## main setup
+setup () {
+  echo
+  echo "  info: Welcome to the 'powerbash' installer!"
+  ## test for require features
+  features git || return $?
+
+  ## build
+  {
+    echo
+    cd "${TMPDIR}"
+    echo "  info: Creating temporary directory."
+    test -d "${GITDIR}" && { echo "  warn: Already exists: '${GITDIR}'"; }
+    rm -rf "${GITDIR}"
+    echo "  info: Fetching latest 'powerbash'."
+    git clone --depth=1 "${REMOTE}" "${GITDIR}" > /dev/null 2>&1
+    cd "${GITDIR}"
+    echo
+    make_install
+    echo
+    echo "  info: Cleaning up installation files."
+    rm -rf "${GITDIR}"
+    echo "  info: Done!"
+    echo
+  } >&2
+  return $?
+}
+
+## make targets
+BIN_DIR="powerbash"
+BIN="powerbash.sh"
+BASH_PROFILE=~/.bash_profile
+BASH_PROFILE_D=/etc/profile.d/z_powerbash.sh
+if [ -z "$PREFIX" ]; then
+  if [ "$USER" == "root" ]; then
+    PREFIX="/usr/local/etc"
+  else
+    PREFIX="$HOME/.local"
+  fi
+fi
+
+make_install () {
+  make_uninstall
+  echo "  info: Installing $PREFIX/$BIN_DIR/$BIN."
+  mkdir -p "$PREFIX/$BIN_DIR"
+  cp $BIN $PREFIX/$BIN_DIR
+  if [ "$USER" == "root" ]; then
+    echo "  info: Linking '$BASH_PROFILE_D'."
+    ln -s $PREFIX/$BIN_DIR/$BIN $BASH_PROFILE_D
+  else
+    if [ -f $BASH_PROFILE ]; then
+      if grep -Fxq "source $PREFIX/$BIN_DIR/$BIN" $BASH_PROFILE; then
+        echo "  warn: '$BASH_PROFILE' already configured."
+      else
+        echo "  info: Configuring '$BASH_PROFILE'."
+        echo "source $PREFIX/$BIN_DIR/$BIN" >> $BASH_PROFILE
+      fi
+    else
+      echo "  warn: '$BASH_PROFILE' does not exist."
+    fi
+  fi
+  return $?
+}
+
+make_uninstall () {
+  echo "  info: Uninstalling $PREFIX/$BIN_DIR/$BIN."
+  rm -rf "$PREFIX/$BIN_DIR"
+  if [ "$USER" == "root" ]; then
+    if [ -L $BASH_PROFILE_D ]; then
+      echo "  info: Unlinking '$BASH_PROFILE_D'."
+      unlink $BASH_PROFILE_D
+    else
+      echo "  warn: link '$BASH_PROFILE_D' not found."
+    fi
+  else
+    if [ -f $BASH_PROFILE ]; then
+      if grep -q "source $PREFIX/$BIN_DIR/$BIN" "$BASH_PROFILE"; then
+        echo "  info: Unconfiguring '$BASH_PROFILE'."
+        sed -i "\|source $PREFIX/$BIN_DIR/$BIN|d" $BASH_PROFILE
+      else
+        echo "  warn: '$BASH_PROFILE' not configured."
+      fi
+    else
+      echo "  warn: '$BASH_PROFILE' does not exist."
+    fi
+  fi
+  return $?
+}
+
+## go
+[ $# -eq 0 ] && setup || make_$1
+exit $?
