@@ -46,6 +46,8 @@ setup () {
     git clone --depth=1 "${REMOTE}" "${GITDIR}" > /dev/null 2>&1
     cd "${GITDIR}"
     echo
+    make_uninstall
+    echo
     make_install
     echo
     echo "  info: Cleaning up installation files."
@@ -57,61 +59,91 @@ setup () {
 }
 
 ## make targets
-BIN_DIR="powerbash"
 BIN="powerbash.sh"
+BASHRC=$HOME/.bashrc
+BASHRC_D=$HOME/.bashrc.d
 BASH_PROFILE=~/.bash_profile
 BASH_PROFILE_D=/etc/profile.d/z_powerbash.sh
 if [ -z "$PREFIX" ]; then
   if [ "$USER" == "root" ]; then
-    PREFIX="/usr/local/etc"
+    PREFIX="/usr/local/bin"
   else
-    PREFIX="$HOME/.local"
+    PREFIX="$HOME/.local/bin"
   fi
 fi
 
 make_install () {
-  make_uninstall
-  echo "  info: Installing $PREFIX/$BIN_DIR/$BIN."
-  mkdir -p "$PREFIX/$BIN_DIR"
-  cp $BIN $PREFIX/$BIN_DIR
+  echo "  info: Installing $PREFIX/$BIN."
+  mkdir -p "$PREFIX"
+  cp $BIN $PREFIX
   if [ "$USER" == "root" ]; then
     echo "  info: Linking '$BASH_PROFILE_D'."
-    ln -s $PREFIX/$BIN_DIR/$BIN $BASH_PROFILE_D
+    ln -s $PREFIX/$BIN $BASH_PROFILE_D
   else
-    if [ -f $BASH_PROFILE ]; then
-      if grep -Fxq "source $PREFIX/$BIN_DIR/$BIN" $BASH_PROFILE; then
+    if [ -d $BASHRC_D ]; then
+      if [ -e "$BASHRC_D/$BIN" ]; then
+        echo "  warn: $BASHRC_D/$BIN already exists."
+      else
+        echo "  info: Linking '$BASHRC_D/$BIN'."
+        ln -s $PREFIX/$BIN $BASHRC_D/$BIN
+      fi
+    elif [ -f $BASHRC ]; then
+      if grep -Fxq "source $PREFIX/$BIN" $BASH_PROFILE; then
+        echo "  warn: '$BASHRC' already configured."
+      else
+        echo "  info: Configuring '$BASHRC'."
+        echo "source $PREFIX/$BIN" >> $BASHRC
+      fi
+    elif [ -f $BASH_PROFILE ]; then
+      if grep -Fxq "source $PREFIX/$BIN" $BASH_PROFILE; then
         echo "  warn: '$BASH_PROFILE' already configured."
       else
         echo "  info: Configuring '$BASH_PROFILE'."
-        echo "source $PREFIX/$BIN_DIR/$BIN" >> $BASH_PROFILE
+        echo "source $PREFIX/$BIN" >> $BASH_PROFILE
       fi
     else
-      echo "  warn: '$BASH_PROFILE' does not exist."
+      echo "  error: Failed to configure powerbash."
     fi
   fi
   return $?
 }
 
 make_uninstall () {
-  echo "  info: Uninstalling $PREFIX/$BIN_DIR/$BIN."
-  rm -rf "$PREFIX/$BIN_DIR"
+  echo "  info: Deleting $PREFIX/$BIN."
+  rm -rf "$PREFIX"
   if [ "$USER" == "root" ]; then
     if [ -L $BASH_PROFILE_D ]; then
       echo "  info: Unlinking '$BASH_PROFILE_D'."
       unlink $BASH_PROFILE_D
     else
-      echo "  warn: link '$BASH_PROFILE_D' not found."
+      echo "  warn: Link '$BASH_PROFILE_D' not found."
     fi
   else
-    if [ -f $BASH_PROFILE ]; then
-      if grep -q "source $PREFIX/$BIN_DIR/$BIN" "$BASH_PROFILE"; then
-        echo "  info: Unconfiguring '$BASH_PROFILE'."
-        sed -i "\|source $PREFIX/$BIN_DIR/$BIN|d" $BASH_PROFILE
+    if [ -L "$BASHRC_D/$BIN" ]; then
+      echo "  info: Unlinking '$BASHRC_D/$BIN'."
+      unlink $BASHRC_D/$BIN
+    else
+      echo "  warn: Link '$BASHRC_D/$BIN' not found."
+    fi
+    if [ -f $BASHRC ]; then
+      if grep -q "source $PREFIX/$BIN" "$BASHRC"; then
+        echo "  info: Unconfiguring '$BASHRC'."
+        sed -i "\|source $PREFIX/$BIN|d" $BASHRC
       else
-        echo "  warn: '$BASH_PROFILE' not configured."
+        echo "  warn: Bashrc '$BASHRC' not configured."
       fi
     else
-      echo "  warn: '$BASH_PROFILE' does not exist."
+      echo "  warn: Bashrc '$BASHRC' does not exist."
+    fi
+    if [ -f $BASH_PROFILE ]; then
+      if grep -q "source $PREFIX/$BIN" "$BASH_PROFILE"; then
+        echo "  info: Unconfiguring '$BASH_PROFILE'."
+        sed -i "\|source $PREFIX/$BIN|d" $BASH_PROFILE
+      else
+        echo "  warn: Profile '$BASH_PROFILE' not configured."
+      fi
+    else
+      echo "  warn: Profile '$BASH_PROFILE' does not exist."
     fi
   fi
   return $?
