@@ -110,7 +110,7 @@ make_install () {
 
 make_uninstall () {
   echo "  info: Deleting $PREFIX/$BIN."
-  rm -rf "$PREFIX"
+  rm -f "$PREFIX/$BIN"
   if [ "$USER" == "root" ]; then
     if [ -L $BASH_PROFILE_D ]; then
       echo "  info: Unlinking '$BASH_PROFILE_D'."
