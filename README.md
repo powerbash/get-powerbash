@@ -1,10 +1,16 @@
 # get-powerbash
 
-The installer served at [get.powerbash.org](https://get.powerbash.org).
+The installer served at [get.powerbash.org](https://get.powerbash.org), for
+machines without Homebrew.
 
 ```bash
 curl -s https://get.powerbash.org | bash
 ```
+
+Where Homebrew is available, `brew install powerbash/powerbash/powerbash` is
+the path to prefer — powerbash then upgrades along with everything else. This
+installer is fully supported either way, and is the answer for the many
+machines that will never have brew on them.
 
 To remove it again:
 
