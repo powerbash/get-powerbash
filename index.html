@@ -1,154 +1,333 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# powerbash setup
+# powerbash installer -- https://get.powerbash.org
 #
+#   curl -s https://get.powerbash.org | bash
+#   curl -s https://get.powerbash.org | bash -s -- uninstall
+#
+# Installs into your own account only. There is no root mode: a multi-user
+# install is a two-line manual step, documented at
+# https://powerbash.org/docs/#global, and it is discouraged.
+#
+# This file is served verbatim as the index of get.powerbash.org, so it is
+# both the web page and the script. Keep it bash 3.2-safe: people pipe it
+# into stock macOS /bin/bash.
 
-REMOTE=${REMOTE:-https://github.com/napalm255/powerbash.git}
-TMPDIR=${TMPDIR:-/tmp}
-GITDIR=${GITDIR:-${TMPDIR}/powerbash-master}
+set -u
 
-## test if command exists
-ftest () {
-  echo "  info: Checking for ${1}."
-  if ! type -f "${1}" > /dev/null 2>&1; then
-    return 1
+VERSION="2.0.0"
+
+SCRIPT_URL="${POWERBASH_URL:-https://download.powerbash.org/powerbash.sh}"
+INSTALL_DIR="${POWERBASH_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/powerbash}"
+INSTALL_PATH="${INSTALL_DIR}/powerbash.sh"
+BASHRC_D="$HOME/.bashrc.d"
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/powerbashrc"
+
+# The block written into the startup file. Uninstall removes exactly what
+# install added by matching these markers -- no fuzzy sed over user content.
+MARKER_BEGIN="# >>> powerbash >>>"
+MARKER_END="# <<< powerbash <<<"
+
+info() { printf '  %s\n' "$*" >&2; }
+warn() { printf '  warning: %s\n' "$*" >&2; }
+die()  { printf '\n  error: %s\n\n' "$*" >&2; exit 1; }
+
+# --- preflight -------------------------------------------------------------
+
+require_bash() {
+  [ -n "${BASH_VERSION:-}" ] || die "this installer needs bash; run it with: curl -s https://get.powerbash.org | bash"
+}
+
+refuse_root() {
+  # `id -u` rather than $EUID or $USER: $USER is not always set under sudo.
+  [ "$(id -u)" -eq 0 ] || return 0
+  cat >&2 <<EOF
+
+  error: refusing to install as root.
+
+  powerbash is meant to be installed per-user -- it needs no privileges, it
+  upgrades cleanly, and it leaves every other account on this machine alone.
+
+  Re-run it as your normal user:
+
+      curl -s https://get.powerbash.org | bash
+
+  If you really do want one prompt for every account, install it by hand:
+
+      curl -Ls ${SCRIPT_URL} -o /etc/profile.d/z_powerbash.sh
+      chmod 0644 /etc/profile.d/z_powerbash.sh
+
+  See https://powerbash.org/docs/#global for the caveats.
+
+EOF
+  exit 1
+}
+
+download() {
+  # $1 = url, $2 = destination
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
   else
-    return 0
+    die "need curl or wget to download powerbash"
   fi
 }
 
-## feature tests
-features () {
-  for f in "${@}"; do
-    ftest "${f}" || {
-      echo >&2 "  error: Missing \`${f}'! Make sure it exists and try again."
-      return 1
-    }
-  done
+# Which file does this shell actually read on startup?
+#
+# macOS terminals start login shells, which read ~/.bash_profile and never
+# ~/.bashrc unless the user wired it up. Everywhere else ~/.bashrc is the
+# right answer. Prefer whichever already exists, so that we don't create a
+# ~/.bash_profile that would shadow an existing ~/.profile.
+startup_file() {
+  case "$(uname -s)" in
+    Darwin)
+      if   [ -f "$HOME/.bash_profile" ]; then echo "$HOME/.bash_profile"
+      elif [ -f "$HOME/.profile" ];      then echo "$HOME/.profile"
+      else echo "$HOME/.bash_profile"
+      fi
+      ;;
+    *)
+      echo "$HOME/.bashrc"
+      ;;
+  esac
+}
+
+# --- install ---------------------------------------------------------------
+
+install_script() {
+  local tmp
+  info "Downloading ${SCRIPT_URL}"
+  mkdir -p "$INSTALL_DIR" || die "could not create ${INSTALL_DIR}"
+
+  tmp="${INSTALL_PATH}.tmp.$$"
+  download "$SCRIPT_URL" "$tmp" || { rm -f "$tmp"; die "download failed"; }
+
+  # A truncated download, or a captive portal's login page, would otherwise
+  # be sourced by every future shell. Two checks before it goes into place:
+  # `bash -n` parses the file without executing any of it, which catches HTML
+  # and half-written downloads, and the namespace match confirms it really is
+  # powerbash. Neither is pinned to a version, so POWERBASH_URL can point at
+  # an older release or a fork.
+  if ! bash -n "$tmp" 2>/dev/null || ! grep -q '__powerbash' "$tmp"; then
+    rm -f "$tmp"
+    die "downloaded file does not look like powerbash.sh"
+  fi
+
+  mv "$tmp" "$INSTALL_PATH" || { rm -f "$tmp"; die "could not write ${INSTALL_PATH}"; }
+  chmod 0644 "$INSTALL_PATH"
+
+  info "Installed ${INSTALL_PATH}"
+}
+
+# Fedora/RHEL's stock ~/.bashrc loops over ~/.bashrc.d. Where that directory
+# exists, dropping a link in is tidier than editing a startup file.
+link_bashrc_d() {
+  [ -d "$BASHRC_D" ] || return 1
+
+  if [ -L "$BASHRC_D/powerbash.sh" ]; then
+    ln -sf "$INSTALL_PATH" "$BASHRC_D/powerbash.sh"
+    info "Refreshed ${BASHRC_D}/powerbash.sh"
+  elif [ -e "$BASHRC_D/powerbash.sh" ]; then
+    warn "${BASHRC_D}/powerbash.sh exists and is not a symlink; leaving it alone"
+    return 1
+  else
+    ln -s "$INSTALL_PATH" "$BASHRC_D/powerbash.sh"
+    info "Linked ${BASHRC_D}/powerbash.sh"
+  fi
   return 0
 }
 
-## main setup
-setup () {
-  echo
-  echo "  info: Welcome to the 'powerbash' installer!"
-  ## test for require features
-  features git || return $?
+configure_startup_file() {
+  local file
+  file="$(startup_file)"
 
-  ## build
+  if [ -f "$file" ] && grep -Fq "$MARKER_BEGIN" "$file"; then
+    info "Already configured in ${file}"
+    return 0
+  fi
+
+  # An install from an older version of this script, or a hand-written line.
+  if [ -f "$file" ] && grep -Fq "powerbash.sh" "$file"; then
+    warn "${file} already sources a powerbash.sh; not adding a second entry"
+    return 0
+  fi
+
+  # Appended, so powerbash sees any PROMPT_COMMAND set earlier in the file
+  # and can cooperate with it.
   {
-    echo
-    cd "${TMPDIR}"
-    echo "  info: Creating temporary directory."
-    test -d "${GITDIR}" && { echo "  warn: Already exists: '${GITDIR}'"; }
-    rm -rf "${GITDIR}"
-    echo "  info: Fetching latest 'powerbash'."
-    git clone --depth=1 "${REMOTE}" "${GITDIR}" > /dev/null 2>&1
-    cd "${GITDIR}"
-    echo
-    make_uninstall
-    echo
-    make_install
-    echo
-    echo "  info: Cleaning up installation files."
-    rm -rf "${GITDIR}"
-    echo "  info: Done!"
-    echo
-  } >&2
-  return $?
+    printf '\n%s\n' "$MARKER_BEGIN"
+    printf '%s\n' "[ -f \"$INSTALL_PATH\" ] && source \"$INSTALL_PATH\""
+    printf '%s\n' "$MARKER_END"
+  } >> "$file" || die "could not write ${file}"
+
+  info "Configured ${file}"
 }
 
-## make targets
-BIN="powerbash.sh"
-BASHRC=$HOME/.bashrc
-BASHRC_D=$HOME/.bashrc.d
-BASH_PROFILE=~/.bash_profile
-BASH_PROFILE_D=/etc/profile.d/z_powerbash.sh
-if [ -z "$PREFIX" ]; then
-  if [ "$USER" == "root" ]; then
-    PREFIX="/usr/local/bin"
-  else
-    PREFIX="$HOME/.local/bin"
-  fi
-fi
+do_install() {
+  echo >&2
+  info "powerbash installer ${VERSION}"
+  echo >&2
 
-make_install () {
-  echo "  info: Installing $PREFIX/$BIN."
-  mkdir -p "$PREFIX"
-  cp $BIN $PREFIX
-  if [ "$USER" == "root" ]; then
-    echo "  info: Linking '$BASH_PROFILE_D'."
-    ln -s $PREFIX/$BIN $BASH_PROFILE_D
-  else
-    if [ -d $BASHRC_D ]; then
-      if [ -e "$BASHRC_D/$BIN" ]; then
-        echo "  warn: $BASHRC_D/$BIN already exists."
-      else
-        echo "  info: Linking '$BASHRC_D/$BIN'."
-        ln -s $PREFIX/$BIN $BASHRC_D/$BIN
-      fi
-    elif [ -f $BASHRC ]; then
-      if grep -Fxq "source $PREFIX/$BIN" $BASH_PROFILE; then
-        echo "  warn: '$BASHRC' already configured."
-      else
-        echo "  info: Configuring '$BASHRC'."
-        echo "source $PREFIX/$BIN" >> $BASHRC
-      fi
-    elif [ -f $BASH_PROFILE ]; then
-      if grep -Fxq "source $PREFIX/$BIN" $BASH_PROFILE; then
-        echo "  warn: '$BASH_PROFILE' already configured."
-      else
-        echo "  info: Configuring '$BASH_PROFILE'."
-        echo "source $PREFIX/$BIN" >> $BASH_PROFILE
-      fi
-    else
-      echo "  error: Failed to configure powerbash."
-    fi
+  install_script
+
+  if ! link_bashrc_d; then
+    configure_startup_file
   fi
-  return $?
+
+  echo >&2
+  info "Done. Start a new shell, or run:"
+  info "    exec bash"
+  echo >&2
+  info "Then try 'powerbash help'. Settings apply to the current shell until"
+  info "you run 'powerbash config save'."
+  echo >&2
 }
 
-make_uninstall () {
-  echo "  info: Deleting $PREFIX/$BIN."
-  rm -f "$PREFIX/$BIN"
-  if [ "$USER" == "root" ]; then
-    if [ -L $BASH_PROFILE_D ]; then
-      echo "  info: Unlinking '$BASH_PROFILE_D'."
-      unlink $BASH_PROFILE_D
-    else
-      echo "  warn: Link '$BASH_PROFILE_D' not found."
+# --- uninstall -------------------------------------------------------------
+
+remove_marker_block() {
+  # $1 = startup file. Rewrites it without the marked block, via a temp file:
+  # `sed -i` is not portable, BSD sed requires an argument to -i.
+  local file tmp line inside removed blanks
+  file="$1"
+  [ -f "$file" ] || return 1
+  grep -Fq "$MARKER_BEGIN" "$file" || return 1
+
+  tmp="${file}.powerbash.$$"
+  inside="no"
+  removed="no"
+  # Blank lines are held back rather than emitted immediately: install writes
+  # a blank line before the block for readability, and leaving it behind
+  # would mean the file grows by one line on every install/uninstall cycle.
+  # Holding them lets the marker drop the one directly above it.
+  blanks=0
+  {
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$inside" = "no" ] && [ -z "$line" ]; then
+      blanks=$((blanks + 1))
+      continue
     fi
-  else
-    if [ -L "$BASHRC_D/$BIN" ]; then
-      echo "  info: Unlinking '$BASHRC_D/$BIN'."
-      unlink $BASHRC_D/$BIN
-    else
-      echo "  warn: Link '$BASHRC_D/$BIN' not found."
-    fi
-    if [ -f $BASHRC ]; then
-      if grep -q "source $PREFIX/$BIN" "$BASHRC"; then
-        echo "  info: Unconfiguring '$BASHRC'."
-        sed -i "\|source $PREFIX/$BIN|d" $BASHRC
-      else
-        echo "  warn: Bashrc '$BASHRC' not configured."
-      fi
-    else
-      echo "  warn: Bashrc '$BASHRC' does not exist."
-    fi
-    if [ -f $BASH_PROFILE ]; then
-      if grep -q "source $PREFIX/$BIN" "$BASH_PROFILE"; then
-        echo "  info: Unconfiguring '$BASH_PROFILE'."
-        sed -i "\|source $PREFIX/$BIN|d" $BASH_PROFILE
-      else
-        echo "  warn: Profile '$BASH_PROFILE' not configured."
-      fi
-    else
-      echo "  warn: Profile '$BASH_PROFILE' does not exist."
-    fi
+
+    case "$line" in
+      "$MARKER_BEGIN")
+        inside="yes"
+        removed="yes"
+        [ "$blanks" -gt 0 ] && blanks=$((blanks - 1))
+        continue
+        ;;
+      "$MARKER_END")
+        inside="no"
+        continue
+        ;;
+    esac
+
+    [ "$inside" = "yes" ] && continue
+
+    while [ "$blanks" -gt 0 ]; do
+      printf '\n'
+      blanks=$((blanks - 1))
+    done
+    printf '%s\n' "$line"
+  done
+
+  # Anything still held at EOF was in the file before we ever touched it
+  # (the block's own leading blank was already consumed above), so it is the
+  # user's trailing whitespace and belongs in the output.
+  while [ "$blanks" -gt 0 ]; do
+    printf '\n'
+    blanks=$((blanks - 1))
+  done
+  } < "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+
+  if [ "$removed" = "yes" ]; then
+    # Copy the contents back rather than mv'ing the temp file over the
+    # original, so the startup file keeps its original mode and inode.
+    cat "$tmp" > "$file" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    return 0
   fi
-  return $?
+
+  rm -f "$tmp"
+  return 1
 }
 
-## go
-[ $# -eq 0 ] && setup || make_$1
-exit $?
+do_uninstall() {
+  local file found
+  found="no"
+
+  echo >&2
+  info "Removing powerbash"
+  echo >&2
+
+  if [ -e "$INSTALL_PATH" ]; then
+    rm -f "$INSTALL_PATH" && info "Removed ${INSTALL_PATH}"
+    rmdir "$INSTALL_DIR" 2>/dev/null && info "Removed ${INSTALL_DIR}"
+    found="yes"
+  fi
+
+  if [ -L "$BASHRC_D/powerbash.sh" ]; then
+    rm -f "$BASHRC_D/powerbash.sh" && info "Unlinked ${BASHRC_D}/powerbash.sh"
+    found="yes"
+  fi
+
+  # Check every startup file we might ever have written to, not only the one
+  # that applies to this platform today.
+  for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+    if remove_marker_block "$file"; then
+      info "Unconfigured ${file}"
+      found="yes"
+    elif [ -f "$file" ] && grep -Fq "powerbash.sh" "$file"; then
+      warn "${file} still references powerbash.sh; remove that line by hand"
+    fi
+  done
+
+  if [ "$found" = "no" ]; then
+    warn "nothing to remove -- powerbash does not appear to be installed"
+  fi
+
+  if [ -f "$CONFIG_FILE" ]; then
+    echo >&2
+    info "Your settings were left in place:"
+    info "    ${CONFIG_FILE}"
+    info "Remove it too if you want a clean slate."
+  fi
+
+  echo >&2
+  info "Done. Start a new shell to drop the prompt."
+  echo >&2
+}
+
+# --- entry point -----------------------------------------------------------
+
+usage() {
+  cat >&2 <<EOF
+
+  powerbash installer ${VERSION}
+
+  curl -s https://get.powerbash.org | bash                  install or upgrade
+  curl -s https://get.powerbash.org | bash -s -- uninstall  remove
+
+  Environment:
+    POWERBASH_URL          where to fetch powerbash.sh from
+                           (default: https://download.powerbash.org/powerbash.sh)
+    POWERBASH_INSTALL_DIR  where to put it
+                           (default: \${XDG_DATA_HOME:-~/.local/share}/powerbash)
+
+EOF
+}
+
+main() {
+  require_bash
+  refuse_root
+
+  case "${1:-install}" in
+    install|"")       do_install ;;
+    uninstall|remove) do_uninstall ;;
+    help|-h|--help)   usage ;;
+    *)                usage; exit 1 ;;
+  esac
+}
+
+main "$@"
