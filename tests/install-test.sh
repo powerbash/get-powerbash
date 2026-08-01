@@ -54,11 +54,30 @@ new_home() {
   echo "$home"
 }
 
+# Which file the installer will edit for a given $HOME. Mirrors startup_file()
+# in the installer: macOS terminals start login shells, so the marker block
+# lands in ~/.bash_profile there and in ~/.bashrc everywhere else. Asserting
+# against a hardcoded ~/.bashrc would fail on macOS for the wrong reason.
+expected_startup() {
+  case "$(uname -s)" in
+    Darwin)
+      if   [ -f "$1/.bash_profile" ]; then echo "$1/.bash_profile"
+      elif [ -f "$1/.profile" ];      then echo "$1/.profile"
+      else echo "$1/.bash_profile"
+      fi
+      ;;
+    *)
+      echo "$1/.bashrc"
+      ;;
+  esac
+}
+
 # --- install into a plain ~/.bashrc ---------------------------------------
 
 home="$(new_home bashrc)"
-printf '# user bashrc\nexport EDITOR=vi\n' > "$home/.bashrc"
-cp "$home/.bashrc" "$WORK/bashrc.original"
+rc="$(expected_startup "$home")"
+printf '# user bashrc\nexport EDITOR=vi\n' > "$rc"
+cp "$rc" "$WORK/bashrc.original"
 
 out="$(run_installer "$home")"
 if [ -f "$home/.local/share/powerbash/powerbash.sh" ]; then
@@ -67,14 +86,14 @@ else
   fail "script not installed: $out"
 fi
 
-if grep -Fq '# >>> powerbash >>>' "$home/.bashrc"; then
-  pass "adds the marker block to ~/.bashrc"
+if grep -Fq '# >>> powerbash >>>' "$rc"; then
+  pass "adds the marker block to ${rc##*/}"
 else
-  fail "no marker block in ~/.bashrc"
+  fail "no marker block in ${rc##*/}"
 fi
 
-# The installed script must actually load in a shell that reads .bashrc.
-got="$(HOME="$home" bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; powerbash' 2>&1)"
+# The installed script must actually load in a shell that reads that file.
+got="$(HOME="$home" bash -c ". '$rc' >/dev/null 2>&1; powerbash" 2>&1)"
 case "$got" in
   *"0.0.0-test"*) pass "a new shell sources the installed script" ;;
   *) fail "new shell did not load powerbash: $got" ;;
@@ -83,7 +102,7 @@ esac
 # --- re-running is idempotent ---------------------------------------------
 
 run_installer "$home" >/dev/null
-count="$(grep -Fc '# >>> powerbash >>>' "$home/.bashrc")"
+count="$(grep -Fc '# >>> powerbash >>>' "$rc")"
 if [ "$count" -eq 1 ]; then
   pass "re-running does not duplicate the marker block"
 else
@@ -99,39 +118,41 @@ else
   pass "uninstall removes the script"
 fi
 
-if grep -Fq 'powerbash' "$home/.bashrc"; then
-  fail "uninstall left powerbash lines in ~/.bashrc"
+if grep -Fq 'powerbash' "$rc"; then
+  fail "uninstall left powerbash lines in ${rc##*/}"
 else
   pass "uninstall removes the marker block"
 fi
 
-if diff -q "$WORK/bashrc.original" "$home/.bashrc" >/dev/null 2>&1; then
+if diff -q "$WORK/bashrc.original" "$rc" >/dev/null 2>&1; then
   pass "the startup file is byte-identical to before the install"
 else
   fail "the startup file differs from the original after install+uninstall:
-$(diff "$WORK/bashrc.original" "$home/.bashrc" || true)"
+$(diff "$WORK/bashrc.original" "$rc" || true)"
 fi
 
 # --- a startup file that ends in blank lines keeps them -------------------
 
 home="$(new_home trailing)"
-printf '# user bashrc\nexport EDITOR=vi\n\n\n' > "$home/.bashrc"
-cp "$home/.bashrc" "$WORK/trailing.original"
+rc="$(expected_startup "$home")"
+printf '# user bashrc\nexport EDITOR=vi\n\n\n' > "$rc"
+cp "$rc" "$WORK/trailing.original"
 
 run_installer "$home" >/dev/null
 run_installer "$home" uninstall >/dev/null
-if diff -q "$WORK/trailing.original" "$home/.bashrc" >/dev/null 2>&1; then
+if diff -q "$WORK/trailing.original" "$rc" >/dev/null 2>&1; then
   pass "trailing blank lines in the startup file survive a round trip"
 else
   fail "trailing blank lines were eaten:
-$(diff "$WORK/trailing.original" "$home/.bashrc" || true)"
+$(diff "$WORK/trailing.original" "$rc" || true)"
 fi
 
 # --- ~/.bashrc.d gets a symlink, not an edit ------------------------------
 
 home="$(new_home bashrcd)"
 mkdir -p "$home/.bashrc.d"
-printf '# user bashrc\n' > "$home/.bashrc"
+rc="$(expected_startup "$home")"
+printf '# user bashrc\n' > "$rc"
 
 run_installer "$home" >/dev/null
 if [ -L "$home/.bashrc.d/powerbash.sh" ]; then
@@ -139,10 +160,10 @@ if [ -L "$home/.bashrc.d/powerbash.sh" ]; then
 else
   fail "no symlink in ~/.bashrc.d"
 fi
-if grep -Fq 'powerbash' "$home/.bashrc"; then
-  fail "edited ~/.bashrc even though ~/.bashrc.d exists"
+if grep -Fq 'powerbash' "$rc"; then
+  fail "edited ${rc##*/} even though ~/.bashrc.d exists"
 else
-  pass "leaves ~/.bashrc untouched when ~/.bashrc.d exists"
+  pass "leaves the startup file untouched when ~/.bashrc.d exists"
 fi
 
 run_installer "$home" uninstall >/dev/null
@@ -155,7 +176,8 @@ fi
 # --- a bad download is not installed --------------------------------------
 
 home="$(new_home baddownload)"
-printf '# user bashrc\n' > "$home/.bashrc"
+rc="$(expected_startup "$home")"
+printf '# user bashrc\n' > "$rc"
 out="$(HOME="$home" POWERBASH_URL="file://$BAD_SCRIPT" bash "$INSTALLER" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
   fail "installer succeeded on a non-powerbash download"
@@ -167,16 +189,16 @@ if [ -e "$home/.local/share/powerbash/powerbash.sh" ]; then
 else
   pass "installs nothing when the download fails validation"
 fi
-if grep -Fq 'powerbash' "$home/.bashrc" 2>/dev/null; then
-  fail "edited ~/.bashrc despite a failed download"
+if grep -Fq 'powerbash' "$rc" 2>/dev/null; then
+  fail "edited the startup file despite a failed download"
 else
-  pass "leaves ~/.bashrc alone when the download fails validation"
+  pass "leaves the startup file alone when the download fails validation"
 fi
 
 # --- a valid shell script that is not powerbash is rejected ---------------
 
 home="$(new_home wrongscript)"
-printf '# user bashrc\n' > "$home/.bashrc"
+printf '# user bashrc\n' > "$(expected_startup "$home")"
 out="$(HOME="$home" POWERBASH_URL="file://$WRONG_SCRIPT" bash "$INSTALLER" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
   fail "installed a valid shell script that is not powerbash"
