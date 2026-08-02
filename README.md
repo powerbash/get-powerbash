@@ -51,12 +51,14 @@ stops Pages from trying to process it.
 ## Tests
 
 ```bash
-./tests/install-test.sh    # round trip against a throwaway $HOME, no network
-./tests/test-bash32.sh     # the same suite under bash 3.2, in a container
+make                # list every target
+make check          # lint, the round trip, and the round trip under bash 3.2
 ```
 
 Every case runs against a temporary `$HOME` and a `file://` URL, so the suite
-never touches the machine running it.
+never touches the machine running it. `tests/install-test.sh` also runs on its
+own — it has to, since it runs inside a bash 3.2 container with no make in it.
+CI calls the same targets.
 
 ## License
 

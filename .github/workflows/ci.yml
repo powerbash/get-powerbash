@@ -8,9 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # index.html is a bash script, so shellcheck needs to be told the shell
-      # rather than guessing from the extension.
-      - run: shellcheck -s bash index.html tests/*.sh
+      - run: make lint
 
   test:
     strategy:
@@ -26,8 +24,10 @@ jobs:
       - name: Show bash version
         run: /bin/bash --version | head -1
 
+      # BASH is pinned because on macOS /bin/bash is the 3.2.57 a curl | bash
+      # actually lands in, and whatever is on PATH is not.
       - name: Install round trip
-        run: /bin/bash tests/install-test.sh
+        run: make test BASH=/bin/bash
 
   # bash 3.2 on Linux/musl, alongside the macOS/BSD coverage above.
   bash32:
@@ -35,13 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install round trip under bash 3.2
-        run: |
-          docker run --rm -v "$PWD:/src:ro" -w /tmp bash:3.2 sh -c '
-            apk add --no-cache curl diffutils >/dev/null &&
-            adduser -D tester &&
-            bash --version | head -1 &&
-            su tester -c "bash /src/tests/install-test.sh"
-          '
+        run: make test-bash32
 
   # The installed script has to actually be the real powerbash.sh, not just
   # something shaped like it. This is the only job that touches the network.
